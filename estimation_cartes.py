@@ -4,6 +4,8 @@ Estimation d'un achat de cartes Pokémon : à lancer une fois par achat, sur la 
 Classeur Excel : un onglet par extension, avec pour chaque carte son image, son prix et le prix d'achat :
 - prix         = tendance Cardmarket × coefficient d'état (voir COEF_ETAT) ;
 - prix d'achat = prix − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00).
+Dans Excel, la colonne « Prix FR » (jaune) permet de saisir le premier prix FR relevé via le lien
+Cardmarket (déjà filtré sur le français et l'état) : le prix d'achat est alors recalculé sur ce prix.
 
 Source : API gratuite TCGdex (https://tcgdex.dev), qui reprend la tendance Cardmarket
 (toutes langues confondues).
@@ -196,7 +198,9 @@ def estimer_une(entree, codes):
         res["image"] = fiche["image"] + "/high.png"
     tendance, id_cardmarket = prix_tendance(fiche, variante)
     if id_cardmarket:
-        res["lien"] = f"https://www.cardmarket.com/fr/Pokemon/Products?idProduct={id_cardmarket}"
+        # Page produit filtrée sur les offres en français (language=2) et sur l'état demandé ou meilleur.
+        res["lien"] = (f"https://www.cardmarket.com/fr/Pokemon/Products?idProduct={id_cardmarket}"
+                       f"&language=2&minCondition={list(COEF_ETAT).index(etat) + 1}")
     if tendance is None:
         res["erreur"] = "pas de prix Cardmarket"
         return res
@@ -295,39 +299,50 @@ def exporter_excel(resultats, chemin):
     recap.title = "Récapitulatif"
     entete(recap, ["Extension", "Cartes", "Valeur", "Prix d'achat"], [40, 10, 14, 14])
 
+    # Prix d'achat calculé par Excel : il se met à jour quand on saisit le prix FR relevé sur Cardmarket.
+    formule_achat = "=FLOOR(H{n}*" + f"{1 - REMISE_ACHAT:g}," + f"{PAS_ARRONDI:g})"
+    saisie = PatternFill("solid", fgColor="FFF59D")
+
     onglets = {"récapitulatif", "erreurs"}
     for extension, lignes in par_extension.items():
-        ws = wb.create_sheet(_nom_onglet(extension, onglets))
-        entete(ws, ["Image", "Carte", "Nom", "État", "Qté", "Prix", "Prix d'achat", "Total achat", "Cardmarket"],
-               [14, 10, 30, 7, 6, 12, 13, 13, 14])
+        nom_onglet = _nom_onglet(extension, onglets)
+        ws = wb.create_sheet(nom_onglet)
+        entete(ws, ["Image", "Carte", "Nom", "État", "Qté", "Tendance", "Prix FR", "Prix retenu", "Prix d'achat",
+                    "Total achat", "Cardmarket FR"],
+               [14, 10, 30, 7, 6, 12, 12, 13, 13, 13, 16])
+        ws["G1"].fill = PatternFill("solid", fgColor="F9A825")
         for r, img in lignes:
-            ws.append([None, r["carte"], r["nom"], r["etat"], r["quantite"], r["prix"], r["prix_achat"],
-                       r["total_achat"], "Voir" if r.get("lien") else None])
-            ligne = ws.max_row
-            ws.row_dimensions[ligne].height = HAUTEUR_IMAGE * 0.75 + 4  # points = pixels × 0,75
-            for cellule in ws[ligne]:
+            n = ws.max_row + 1
+            ws.append([None, r["carte"], r["nom"], r["etat"], r["quantite"], r["prix"], None,
+                       f'=IF(G{n}="",F{n},G{n})', formule_achat.format(n=n), f"=I{n}*E{n}",
+                       "Voir les offres FR" if r.get("lien") else None])
+            ws.row_dimensions[n].height = HAUTEUR_IMAGE * 0.75 + 4  # points = pixels × 0,75
+            for cellule in ws[n]:
                 cellule.alignment = Alignment(vertical="center")
-            for col in "FGH":
-                ws[f"{col}{ligne}"].number_format = EUR
+            for col in "FGHIJ":
+                ws[f"{col}{n}"].number_format = EUR
+            ws[f"G{n}"].fill = saisie
             if r.get("lien"):
-                ws[f"I{ligne}"].hyperlink = r["lien"]
-                ws[f"I{ligne}"].style = "Hyperlink"
+                ws[f"K{n}"].hyperlink = r["lien"]
+                ws[f"K{n}"].style = "Hyperlink"
+                ws[f"K{n}"].alignment = Alignment(vertical="center")
             if img:
                 image = ImageXL(BytesIO(img))
                 image.width, image.height = LARGEUR_IMAGE, HAUTEUR_IMAGE
-                ws.add_image(image, f"A{ligne}")
+                ws.add_image(image, f"A{n}")
             else:
-                ws[f"A{ligne}"] = "(pas d'image)"
+                ws[f"A{n}"] = "(pas d'image)"
 
         derniere = ws.max_row
-        ws.append([None, None, "TOTAL", None, f"=SUM(E2:E{derniere})", f"=SUMPRODUCT(E2:E{derniere},F2:F{derniere})",
-                   None, f"=SUM(H2:H{derniere})"])
-        for cellule in ws[ws.max_row]:
+        total = derniere + 1
+        ws.append([None, None, "TOTAL", None, f"=SUM(E2:E{derniere})", None, None,
+                   f"=SUMPRODUCT(E2:E{derniere},H2:H{derniere})", None, f"=SUM(J2:J{derniere})"])
+        for cellule in ws[total]:
             cellule.font = Font(bold=True)
-        ws[f"F{ws.max_row}"].number_format = ws[f"H{ws.max_row}"].number_format = EUR
+        ws[f"H{total}"].number_format = ws[f"J{total}"].number_format = EUR
 
-        recap.append([extension, sum(r["quantite"] for r, _ in lignes),
-                      sum(r["prix"] * r["quantite"] for r, _ in lignes), sum(r["total_achat"] for r, _ in lignes)])
+        ref = "'" + nom_onglet.replace("'", "''") + "'!"
+        recap.append([extension, f"={ref}E{total}", f"={ref}H{total}", f"={ref}J{total}"])
 
     derniere = recap.max_row
     recap.append(["TOTAL", f"=SUM(B2:B{derniere})", f"=SUM(C2:C{derniere})", f"=SUM(D2:D{derniere})"])
@@ -335,6 +350,9 @@ def exporter_excel(resultats, chemin):
         cellule.font = Font(bold=True)
     for ligne in range(2, recap.max_row + 1):
         recap[f"C{ligne}"].number_format = recap[f"D{ligne}"].number_format = EUR
+    recap.append([])
+    recap.append(["Saisissez le premier prix FR (case jaune) dans chaque onglet : le prix d'achat et les totaux "
+                  "se recalculent. Case vide = tendance Cardmarket toutes langues."])
 
     erreurs = [r for r in resultats if r["erreur"]]
     if erreurs:

@@ -50,8 +50,15 @@ se règlent en haut de `estimation_cartes.py`.
 ## Contenu du fichier Excel
 
 - **Récapitulatif** : nombre de cartes, valeur et prix d'achat par extension, et le total du lot.
-- **Un onglet par extension** : image de la carte, code, nom, état, quantité, prix, prix d'achat, total, lien Cardmarket,
-  avec une ligne de total en bas.
+- **Un onglet par extension** : image de la carte, code, nom, état, quantité, tendance, **Prix FR**, prix retenu,
+  prix d'achat, total et lien Cardmarket, avec une ligne de total en bas.
+
+### Saisir le premier prix FR
+
+Le lien **« Voir les offres FR »** ouvre la page Cardmarket de la carte, déjà filtrée sur les offres **en français**
+dans l'état de la carte ou meilleur. Recopiez le premier prix dans la case jaune **Prix FR** :
+le prix d'achat (−20 %, arrondi au 0,50 € inférieur), les totaux et le récapitulatif se recalculent dans Excel.
+Si la case reste vide, le calcul utilise la tendance Cardmarket toutes langues.
 - **Erreurs** (seulement s'il y en a) : cartes introuvables ou sans prix.
 
 Certaines cartes promo n'ont pas d'image chez TCGdex : la case indique alors « (pas d'image) ».
