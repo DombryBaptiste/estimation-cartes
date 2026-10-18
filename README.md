@@ -6,13 +6,19 @@ Chaque carte y figure avec son **image**, son **prix** (tendance Cardmarket) et 
 Les prix viennent de l'API gratuite [TCGdex](https://tcgdex.dev), qui reprend les prix Cardmarket.
 La tendance n'est **pas filtrée par langue** (toutes langues confondues). Un coefficient est ensuite appliqué selon l'état de la carte.
 
-## Prérequis
+## Installation (une seule fois)
 
-Python 3.10 ou plus récent, puis une seule fois :
+1. Installez **Python 3.10 ou plus récent** depuis https://www.python.org/downloads/
+   en cochant **« Add python.exe to PATH »**.
+2. Dans un terminal ouvert dans ce dossier, copiez-collez la commande suivante.
+   Elle installe les modules nécessaires (`openpyxl`, `pillow`) :
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install --upgrade -r requirements.txt
 ```
+
+> En cas d'erreur `No module named openpyxl`, relancez l'installation : les modules doivent être installés
+> pour **le même Python** que celui qui lance le script (d'où `python -m pip` plutôt que `pip`).
 
 ## Utilisation
 
