@@ -1,8 +1,8 @@
 """
-Classeur Excel de sélection pour les achats de cartes Pokémon.
+Classeur de sélection pour les achats de cartes Pokémon, à importer dans Google Sheets (fichier .xlsx).
 
 Un onglet par série (ex. « PFL - Flammes Fantasmagoriques ») avec, pour chaque carte du JSON :
-image, case « Pris », code, nom, état, prix FR à saisir, prix d'achat calculé et lien Cardmarket
+image (=IMAGE), case « Pris », code, nom, état, prix FR à saisir, prix d'achat calculé et lien Cardmarket
 (déjà filtré sur les offres en français et l'état).
 - prix d'achat = prix FR − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00) ;
 - le récapitulatif ne totalise que les cartes cochées « Pris ».
@@ -33,6 +33,7 @@ import json
 import math
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -61,15 +62,19 @@ PAS_ARRONDI = 0.5
 _set_cache = {}
 
 
-def _get(url):
+def _get(url, essais=8):
     req = urllib.request.Request(url, headers={"User-Agent": "estimation-cartes/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
+    for essai in range(essais):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            if e.code in (429, 503) and essai < essais - 1:  # TCGdex limite le débit : on patiente
+                time.sleep(2 * (essai + 1))
+                continue
+            raise
 
 
 def charger_codes_sets(rafraichir=False):
@@ -145,6 +150,23 @@ def trouver_carte(set_id, numero):
     return None
 
 
+def _image_sous_set(set_id, numero):
+    """
+    Les galeries (swsh9tg, swsh12.5gg...) et le coffre étincelant (swsh4.5sv) n'ont pas d'image dans leur fiche,
+    mais leurs visuels existent sous le set principal (swsh9/TG01). Renvoie cette URL si elle existe.
+    """
+    parent = re.sub(r"(tg|gg|sv)$", "", set_id)
+    if parent == set_id or not numero:
+        return None
+    url = f"https://assets.tcgdex.net/fr/{re.match(r'[a-z]+', parent).group()}/{parent}/{numero}"
+    try:
+        req = urllib.request.Request(url + "/low.png", method="HEAD", headers={"User-Agent": "estimation-cartes/1.0"})
+        with urllib.request.urlopen(req, timeout=20):
+            return url
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
 def prix_tendance(fiche, variante):
     """Prix de tendance Cardmarket (normal, ou holo/reverse selon la variante)."""
     cm = (fiche.get("pricing") or {}).get("cardmarket") or {}
@@ -196,8 +218,9 @@ def estimer_une(entree, codes):
     # Série = extension précise (PFL - Flammes Fantasmagoriques), pas le bloc (Méga-Évolution).
     code_serie = ((_detail_set(set_id, "en") or {}).get("abbreviation") or {}).get("official") or prefixe
     res["serie"] = f"{code_serie} - {res['extension']}"
-    if fiche.get("image"):
-        res["image"] = fiche["image"] + "/high.png"
+    image = fiche.get("image") or _image_sous_set(set_id, fiche.get("localId", ""))
+    if image:
+        res["image"] = image + "/high.png"
     tendance, id_cardmarket = prix_tendance(fiche, variante)
     if id_cardmarket:
         # Page produit filtrée sur les offres en français (language=2) et sur l'état demandé ou meilleur.
@@ -235,24 +258,6 @@ def afficher(resultats):
     print(f"\n{sum(series.values())} cartes dans {len(series)} séries, {len(erreurs)} en erreur")
 
 
-def _telecharger_image(url):
-    """Vignette JPEG de la carte (180 × 250 px), ou None si indisponible."""
-    if not url:
-        return None
-    from io import BytesIO
-    from PIL import Image
-    req = urllib.request.Request(url.replace("/high.png", "/low.jpg"), headers={"User-Agent": "estimation-cartes/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            image = Image.open(BytesIO(r.read())).convert("RGB")
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return None
-    image.thumbnail((180, 250))
-    sortie = BytesIO()
-    image.save(sortie, "JPEG", quality=85)
-    return sortie.getvalue()
-
-
 def _nom_onglet(nom, deja_pris):
     """Nom d'onglet Excel valide (31 caractères max, sans []:*?/\\) et unique."""
     base = re.sub(r"[\[\]:*?/\\]", "-", nom or "Sans série").strip()[:31] or "Sans série"
@@ -266,18 +271,16 @@ def _nom_onglet(nom, deja_pris):
 
 def exporter_excel(resultats, chemin):
     """
-    Classeur Excel de sélection : un onglet par série, prix FR saisis à la main,
-    case « Pris » par carte et récapitulatif des seules cartes prises.
+    Classeur de sélection, pensé pour être importé dans Google Sheets : un onglet par série,
+    image via =IMAGE(), prix FR saisis à la main, case « Pris » par carte et récapitulatif
+    des seules cartes prises.
     """
-    from io import BytesIO
     from openpyxl import Workbook
-    from openpyxl.drawing.image import Image as ImageXL
     from openpyxl.formatting.rule import FormulaRule
     from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.worksheet.datavalidation import DataValidation
 
     EUR = '#,##0.00 "€"'
-    LARGEUR_IMAGE, HAUTEUR_IMAGE = 90, 125  # pixels
+    HAUTEUR_LIGNE = 100  # points : laisse la place à l'image de la carte
     entete_style = (Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="3949AB"))
     saisie = PatternFill("solid", fgColor="FFF59D")
     vert = PatternFill("solid", fgColor="C8E6C9")
@@ -289,15 +292,11 @@ def exporter_excel(resultats, chemin):
             cellule.font, cellule.fill = entete_style
             ws.column_dimensions[cellule.column_letter].width = largeur
 
-    print("Téléchargement des images...", file=sys.stderr)
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        images = list(pool.map(lambda r: _telecharger_image(r.get("image")), resultats))
-
     # Regroupement par série, dans l'ordre du JSON ; une ligne par exemplaire.
     par_serie = {}
-    for r, img in zip(resultats, images):
+    for r in resultats:
         if not r["erreur"]:
-            par_serie.setdefault(r.get("serie") or "Sans série", []).extend([(r, img)] * max(1, r["quantite"]))
+            par_serie.setdefault(r.get("serie") or "Sans série", []).extend([r] * max(1, r["quantite"]))
 
     wb = Workbook()
     recap = wb.active
@@ -305,8 +304,8 @@ def exporter_excel(resultats, chemin):
 
     # Prix d'achat : prix FR saisi − remise, arrondi au pas inférieur ; vide tant que le prix n'est pas saisi.
     achat = '=IF(F{n}="","",FLOOR(F{n}*' + f"{1 - REMISE_ACHAT:g},{PAS_ARRONDI:g}))"
-    # Carte prise : ✔ (liste), x, ou case à cocher Excel (VRAI).
-    pris = '=IF(OR(B{n}=TRUE,B{n}="✔",LOWER(B{n})="x"),1,0)'
+    # Carte prise : case cochée (VRAI) ou « x ».
+    pris = '=IF(OR(B{n}=TRUE,LOWER(B{n})="x"),1,0)'
 
     onglets = {"récapitulatif", "erreurs"}
     lignes_recap = []
@@ -319,32 +318,19 @@ def exporter_excel(resultats, chemin):
         ws.column_dimensions["I"].hidden = True  # colonne technique : 1 si la carte est prise
         ws.freeze_panes = "C2"
 
-        for r, img in cartes:
+        for r in cartes:
             n = ws.max_row + 1
-            ws.append([None, None, r["carte"], r["nom"], r["etat"], None, achat.format(n=n),
-                       "Voir les offres FR" if r.get("lien") else None, pris.format(n=n)])
-            ws.row_dimensions[n].height = HAUTEUR_IMAGE * 0.75 + 4  # points = pixels × 0,75
+            image = f'=IMAGE("{r["image"].replace("/high.png", "/low.png")}")' if r.get("image") else "(pas d'image)"
+            lien = f'=HYPERLINK("{r["lien"]}","Voir les offres FR")' if r.get("lien") else None
+            ws.append([image, False, r["carte"], r["nom"], r["etat"], None, achat.format(n=n), lien, pris.format(n=n)])
+            ws.row_dimensions[n].height = HAUTEUR_LIGNE
             for cellule in ws[n]:
                 cellule.alignment = Alignment(vertical="center")
             ws[f"B{n}"].alignment = Alignment(horizontal="center", vertical="center")
-            ws[f"B{n}"].font = Font(size=16, bold=True, color="2E7D32")
             ws[f"F{n}"].fill = saisie
             ws[f"F{n}"].number_format = ws[f"G{n}"].number_format = EUR
-            if r.get("lien"):
-                ws[f"H{n}"].hyperlink = r["lien"]
-                ws[f"H{n}"].style = "Hyperlink"
-                ws[f"H{n}"].alignment = Alignment(vertical="center")
-            if img:
-                image = ImageXL(BytesIO(img))
-                image.width, image.height = LARGEUR_IMAGE, HAUTEUR_IMAGE
-                ws.add_image(image, f"A{n}")
-            else:
-                ws[f"A{n}"] = "(pas d'image)"
 
         derniere = ws.max_row
-        validation = DataValidation(type="list", formula1='"✔"', allow_blank=True, showErrorMessage=False)
-        ws.add_data_validation(validation)
-        validation.add(f"B2:B{derniere}")
         ws.conditional_formatting.add(f"B2:H{derniere}", FormulaRule(formula=["$I2=1"], fill=vert))
 
         total = derniere + 2
@@ -381,11 +367,11 @@ def exporter_excel(resultats, chemin):
     aide = [
         "Mode d'emploi",
         "1. Dans chaque onglet, saisissez le prix FR (case jaune) : le prix d'achat se calcule (−20 %, arrondi au 0,50 € inférieur).",
-        "2. Cochez « Pris » (liste ✔, ou tapez x) pour les cartes que vous prenez : la ligne passe en vert.",
+        "2. Cochez « Pris » pour les cartes que vous prenez : la ligne passe en vert.",
+        "   (Après import dans Google Sheets : sélectionnez la colonne B de chaque onglet > Insertion > Case à cocher.)",
         "3. Ce récapitulatif ne totalise que les cartes prises.",
-        "Remise à zéro : cliquez sur le 1er onglet de série, puis Maj+clic sur le dernier (toutes les séries sont groupées),",
-        "sélectionnez la colonne B (Pris) et appuyez sur Suppr. Même chose sur la colonne F pour effacer les prix.",
-        "Cliquez ensuite sur l'onglet Récapitulatif pour dégrouper les feuilles.",
+        "Remise à zéro : dans chaque onglet, sélectionnez la colonne B (Pris) et appuyez sur Suppr (les cases se décochent).",
+        "Même chose sur la colonne F pour effacer les prix FR.",
     ]
     recap.append([])
     for texte in aide:
