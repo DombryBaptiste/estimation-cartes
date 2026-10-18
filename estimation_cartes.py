@@ -1,9 +1,12 @@
 """
-Estimation rapide d'une liste de cartes Pokémon avec les prix Cardmarket (EUR).
+Estimation d'un achat de cartes Pokémon : à lancer une fois par achat, sur la liste des cartes.
 
-Source : API gratuite TCGdex (https://tcgdex.dev), qui reprend les prix Cardmarket
-(tendance). Ce prix n'est pas filtré par langue ni par état : un coefficient
-par état est appliqué (voir COEF_ETAT), puis la remise de rachat (REMISE_RACHAT, -20 % par défaut).
+Pour chaque carte du JSON, le CSV donne l'image, le prix et le prix d'achat :
+- prix         = tendance Cardmarket × coefficient d'état (voir COEF_ETAT) ;
+- prix d'achat = prix − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00).
+
+Source : API gratuite TCGdex (https://tcgdex.dev), qui reprend la tendance Cardmarket
+(toutes langues confondues).
 
 Utilisation :
     python estimation_cartes.py cartes.json              -> tableau + estimation.csv
@@ -20,12 +23,13 @@ Format du JSON :
 
 Intégration dans une autre application :
     from estimation_cartes import estimer
-    resultats, total = estimer([{"carte": "PFL01", "etat": "NM"}])
+    resultats, total_achat = estimer([{"carte": "PFL01", "etat": "NM"}])
 """
 
 import argparse
 import csv
 import json
+import math
 import re
 import sys
 import urllib.error
@@ -47,8 +51,11 @@ COEF_ETAT = {
     "PO": 0.30,  # Poor
 }
 
-# Remise appliquée à la tendance pour obtenir le prix de rachat (0.20 = -20 %).
-REMISE_RACHAT = 0.20
+# Remise appliquée au prix pour obtenir le prix d'achat (0.20 = -20 %).
+REMISE_ACHAT = 0.20
+
+# Le prix d'achat est arrondi au multiple inférieur de ce pas (0.5 = au 0,50 € inférieur).
+PAS_ARRONDI = 0.5
 
 _set_cache = {}
 
@@ -147,6 +154,11 @@ def prix_tendance(fiche, variante):
     return tendance or None, cm.get("idProduct")
 
 
+def arrondi_inferieur(prix, pas=PAS_ARRONDI):
+    """Arrondi au multiple inférieur du pas : 6.7 -> 6.5 ; 6.4 -> 6.0 ; 6.5 -> 6.5."""
+    return math.floor(prix / pas + 1e-9) * pas  # 1e-9 : évite 6.5 -> 6.0 à cause des flottants
+
+
 def _valeur(entree, *cles, defaut=None):
     for k, v in entree.items():
         if k.lower() in cles:
@@ -161,8 +173,8 @@ def estimer_une(entree, codes):
     variante = str(_valeur(entree, "variante", "variant", defaut="normal")).strip().lower()
 
     res = {"carte": code, "etat": etat, "quantite": quantite, "variante": variante,
-           "nom": "", "extension": "", "tendance": None, "prix_rachat": None,
-           "total_rachat": None, "erreur": ""}
+           "nom": "", "extension": "", "image": "", "tendance": None, "prix": None,
+           "prix_achat": None, "total_achat": None, "erreur": ""}
 
     prefixe, numero = decouper_code(code)
     set_id = codes.get(prefixe or "")
@@ -180,6 +192,8 @@ def estimer_une(entree, codes):
 
     res["nom"] = fiche.get("name", "")
     res["extension"] = (fiche.get("set") or {}).get("name", "")
+    if fiche.get("image"):
+        res["image"] = fiche["image"] + "/high.png"
     tendance, id_cardmarket = prix_tendance(fiche, variante)
     if id_cardmarket:
         res["lien"] = f"https://www.cardmarket.com/fr/Pokemon/Products?idProduct={id_cardmarket}"
@@ -187,17 +201,18 @@ def estimer_une(entree, codes):
         res["erreur"] = "pas de prix Cardmarket"
         return res
     res["tendance"] = tendance
-    res["prix_rachat"] = round(tendance * COEF_ETAT[etat] * (1 - REMISE_RACHAT), 2)
-    res["total_rachat"] = round(res["prix_rachat"] * quantite, 2)
+    res["prix"] = round(tendance * COEF_ETAT[etat], 2)
+    res["prix_achat"] = arrondi_inferieur(res["prix"] * (1 - REMISE_ACHAT))
+    res["total_achat"] = res["prix_achat"] * quantite
     return res
 
 
 def estimer(cartes, rafraichir=False):
-    """Estime une liste de cartes. Renvoie (liste de résultats, total de rachat en EUR)."""
+    """Estime une liste de cartes. Renvoie (liste de résultats, total d'achat en EUR)."""
     codes = charger_codes_sets(rafraichir)
     with ThreadPoolExecutor(max_workers=8) as pool:
         resultats = list(pool.map(lambda e: estimer_une(e, codes), cartes))
-    total = round(sum(r["total_rachat"] or 0 for r in resultats), 2)
+    total = round(sum(r["total_achat"] or 0 for r in resultats), 2)
     return resultats, total
 
 
@@ -206,27 +221,27 @@ def _eur(v):
 
 
 def afficher(resultats, total):
-    lignes = [("Carte", "Nom", "État", "Qté", "Tendance", "Rachat", "Total rachat")]
+    lignes = [("Carte", "Nom", "État", "Qté", "Prix", "Prix d'achat", "Total achat")]
     for r in resultats:
         if r["erreur"]:
             lignes.append((r["carte"], "⚠ " + r["erreur"], r["etat"], str(r["quantite"]), "", "", ""))
         else:
-            lignes.append((r["carte"], r["nom"][:30], r["etat"], str(r["quantite"]), _eur(r["tendance"]),
-                           _eur(r["prix_rachat"]), _eur(r["total_rachat"])))
+            lignes.append((r["carte"], r["nom"][:30], r["etat"], str(r["quantite"]), _eur(r["prix"]),
+                           _eur(r["prix_achat"]), _eur(r["total_achat"])))
     largeurs = [max(len(l[i]) for l in lignes) for i in range(len(lignes[0]))]
     for n, l in enumerate(lignes):
         print("  ".join(c.ljust(w) for c, w in zip(l, largeurs)))
         if n == 0:
             print("  ".join("-" * w for w in largeurs))
     nb_erreurs = sum(1 for r in resultats if r["erreur"])
-    total_tendance = sum((r["tendance"] or 0) * r["quantite"] for r in resultats)
-    print(f"\nValeur tendance : {_eur(total_tendance)}")
-    print(f"PRIX DE RACHAT  : {_eur(total)}  ({len(resultats) - nb_erreurs} cartes estimées, {nb_erreurs} en erreur)")
+    total_prix = sum((r["prix"] or 0) * r["quantite"] for r in resultats)
+    print(f"\nValeur du lot : {_eur(total_prix)}")
+    print(f"PRIX D'ACHAT  : {_eur(total)}  ({len(resultats) - nb_erreurs} cartes estimées, {nb_erreurs} en erreur)")
 
 
 def exporter_csv(resultats, chemin):
-    colonnes = ["carte", "nom", "extension", "etat", "variante", "quantite", "tendance",
-                "prix_rachat", "total_rachat", "lien", "erreur"]
+    colonnes = ["carte", "nom", "extension", "etat", "quantite", "image", "prix",
+                "prix_achat", "total_achat", "lien", "erreur"]
     with open(chemin, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig : accents OK dans Excel
         w = csv.writer(f, delimiter=";")
         w.writerow(colonnes)
@@ -241,7 +256,7 @@ def exporter_csv(resultats, chemin):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Estimation d'une liste de cartes Pokémon (prix Cardmarket).")
+    p = argparse.ArgumentParser(description="Estimation d'un achat de cartes Pokémon (prix Cardmarket, prix d'achat).")
     p.add_argument("fichier", nargs="?", help="fichier JSON contenant la liste des cartes")
     p.add_argument("-o", "--sortie", default="estimation.csv", help="fichier CSV de sortie")
     p.add_argument("--rafraichir", action="store_true", help="recharger la liste des sets (nouvelle extension)")
