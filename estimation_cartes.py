@@ -192,8 +192,11 @@ def estimer_une(entree, codes):
         res["erreur"] = f"carte introuvable : {set_id} n°{numero}"
         return res
 
-    res["nom"] = fiche.get("name", "")
+    res["nom"] = fiche.get("name", "") + (f" ({variante})" if variante in ("reverse", "holo") else "")
     res["extension"] = (fiche.get("set") or {}).get("name", "")
+    # Série = extension précise (PFL - Flammes Fantasmagoriques), pas le bloc (Méga-Évolution).
+    code_serie = ((_detail_set(set_id, "en") or {}).get("abbreviation") or {}).get("official") or prefixe
+    res["serie"] = f"{code_serie} - {res['extension']}"
     if fiche.get("image"):
         res["image"] = fiche["image"] + "/high.png"
     tendance, id_cardmarket = prix_tendance(fiche, variante)
@@ -288,16 +291,16 @@ def exporter_excel(resultats, chemin):
     with ThreadPoolExecutor(max_workers=8) as pool:
         images = list(pool.map(lambda r: _telecharger_image(r.get("image")), resultats))
 
-    # Regroupement par extension, dans l'ordre d'apparition dans le JSON.
+    # Regroupement par série (extension), dans l'ordre d'apparition dans le JSON.
     par_extension = {}
     for r, img in zip(resultats, images):
         if not r["erreur"]:
-            par_extension.setdefault(r["extension"] or "Sans extension", []).append((r, img))
+            par_extension.setdefault(r.get("serie") or "Sans série", []).append((r, img))
 
     wb = Workbook()
     recap = wb.active
     recap.title = "Récapitulatif"
-    entete(recap, ["Extension", "Cartes", "Valeur", "Prix d'achat"], [40, 10, 14, 14])
+    entete(recap, ["Série", "Cartes", "Valeur", "Prix d'achat"], [40, 10, 14, 14])
 
     # Prix d'achat calculé par Excel : il se met à jour quand on saisit le prix FR relevé sur Cardmarket.
     formule_achat = "=FLOOR(H{n}*" + f"{1 - REMISE_ACHAT:g}," + f"{PAS_ARRONDI:g})"

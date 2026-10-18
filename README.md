@@ -42,6 +42,11 @@ Format du fichier JSON :
 - `carte` : code de l'extension + numéro (`PFL01`, `PFL 1`, `PFL-001`…). Les codes sont listés dans `extensions.csv`.
 - `etat` : `MT`, `NM`, `EX`, `GD`, `LP`, `PL`, `PO` (NM par défaut).
 - `quantite` et `variante` (`normal`, `reverse`, `holo`) sont facultatifs.
+  Pour une **reverse**, ajoutez `"variante": "reverse"` : le prix utilisé est alors la tendance reverse/holo de Cardmarket,
+  et la carte apparaît comme « Nom (reverse) » dans l'Excel.
+
+La liste `ar_alt_me.json` contient toutes les **AR** (Illustration rare) et **ALT** (Illustration spéciale rare)
+du bloc Méga-Évolution, de MEG à PBL (156 cartes, en NM).
 
 ## Calcul
 
@@ -55,8 +60,8 @@ se règlent en haut de `estimation_cartes.py`.
 
 ## Contenu du fichier Excel
 
-- **Récapitulatif** : nombre de cartes, valeur et prix d'achat par extension, et le total du lot.
-- **Un onglet par extension** : image de la carte, code, nom, état, quantité, tendance, **Prix FR**, prix retenu,
+- **Récapitulatif** : nombre de cartes, valeur et prix d'achat par série, et le total du lot.
+- **Un onglet par série** (ex. « PFL - Flammes Fantasmagoriques ») : image de la carte, code, nom, état, quantité, tendance, **Prix FR**, prix retenu,
   prix d'achat, total et lien Cardmarket, avec une ligne de total en bas.
 
 ### Saisir le premier prix FR
