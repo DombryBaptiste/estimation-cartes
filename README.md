@@ -50,10 +50,10 @@ Format du fichier JSON :
 
 | Fichier | Contenu |
 |---|---|
-| `cartes_eb01_30ans.json` | **Toutes les cartes d'EB01 (Épée et Bouclier) au set des 30 ans**, galeries, coffre étincelant et Collection Classique comprises, **hors Commune, Peu Commune, Rare et Holo** : 2 952 cartes, 47 séries. Promos et énergies exclues. |
+| `cartes_eb01_30ans.json` | **Toutes les cartes d'EB01 (Épée et Bouclier) au set des 30 ans**, galeries, coffre étincelant et Collection Classique comprises, **hors Commune, Peu Commune, Rare, Holo, ex classiques (Double rare) et V classiques** : 2 384 cartes, 47 séries. Promos et énergies exclues. |
 | `rares_ev_me.json` | AR, Full Art, ALT et Gold du bloc Écarlate et Violet et du bloc Méga-Évolution : 1 169 cartes. |
 
-Les raretés viennent de TCGdex. Exemples de raretés gardées : V, VMAX, VSTAR, ex, Ultra Rare, Illustration rare,
+Les raretés viennent de TCGdex. Exemples de raretés gardées : VMAX, VSTAR, Ultra Rare (Full Art), Illustration rare,
 Illustration spéciale rare, Hyper rare, Chromatique, Radieux, Magnifique, HIGH-TECH (ACE SPEC), Galerie de dresseurs…
 
 ## Importer dans Google Sheets
