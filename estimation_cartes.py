@@ -1,7 +1,7 @@
 """
 Estimation d'un achat de cartes Pokémon : à lancer une fois par achat, sur la liste des cartes.
 
-Pour chaque carte du JSON, le CSV donne l'image, le prix et le prix d'achat :
+Classeur Excel : un onglet par extension, avec pour chaque carte son image, son prix et le prix d'achat :
 - prix         = tendance Cardmarket × coefficient d'état (voir COEF_ETAT) ;
 - prix d'achat = prix − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00).
 
@@ -9,8 +9,8 @@ Source : API gratuite TCGdex (https://tcgdex.dev), qui reprend la tendance Cardm
 (toutes langues confondues).
 
 Utilisation :
-    python estimation_cartes.py cartes.json              -> tableau + estimation.csv
-    python estimation_cartes.py cartes.json -o lot.csv
+    python estimation_cartes.py cartes.json              -> tableau + estimation.xlsx
+    python estimation_cartes.py cartes.json -o lot.xlsx
     python estimation_cartes.py cartes.json --rafraichir  (recharge la liste des sets)
     python estimation_cartes.py --extensions             -> extensions.csv (tous les codes)
 
@@ -239,26 +239,117 @@ def afficher(resultats, total):
     print(f"PRIX D'ACHAT  : {_eur(total)}  ({len(resultats) - nb_erreurs} cartes estimées, {nb_erreurs} en erreur)")
 
 
-def exporter_csv(resultats, chemin):
-    colonnes = ["carte", "nom", "extension", "etat", "quantite", "image", "prix",
-                "prix_achat", "total_achat", "lien", "erreur"]
-    with open(chemin, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig : accents OK dans Excel
-        w = csv.writer(f, delimiter=";")
-        w.writerow(colonnes)
-        for r in resultats:
-            ligne = []
-            for c in colonnes:
-                v = r.get(c)
-                if isinstance(v, float):
-                    v = f"{v:.2f}".replace(".", ",")  # virgule décimale pour Excel FR
-                ligne.append("" if v is None else v)
-            w.writerow(ligne)
+def _telecharger_image(url):
+    """Image de la carte (petite taille) en mémoire, ou None si indisponible."""
+    if not url:
+        return None
+    req = urllib.request.Request(url.replace("/high.png", "/low.png"), headers={"User-Agent": "estimation-cartes/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read()
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+def _nom_onglet(nom, deja_pris):
+    """Nom d'onglet Excel valide (31 caractères max, sans []:*?/\\) et unique."""
+    base = re.sub(r"[\[\]:*?/\\]", "-", nom or "Sans extension").strip()[:31] or "Sans extension"
+    nom_final, n = base, 2
+    while nom_final.lower() in deja_pris:
+        suffixe = f" ({n})"
+        nom_final, n = base[:31 - len(suffixe)] + suffixe, n + 1
+    deja_pris.add(nom_final.lower())
+    return nom_final
+
+
+def exporter_excel(resultats, chemin):
+    """Classeur Excel : un onglet par extension (avec l'image de chaque carte) + un onglet récapitulatif."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as ImageXL
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    EUR = '#,##0.00 "€"'
+    LARGEUR_IMAGE, HAUTEUR_IMAGE = 90, 125  # pixels
+    entete_style = (Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="3949AB"))
+
+    def entete(ws, titres, largeurs):
+        ws.append(titres)
+        for cellule, largeur in zip(ws[ws.max_row], largeurs):
+            cellule.font, cellule.fill = entete_style
+            ws.column_dimensions[cellule.column_letter].width = largeur
+        ws.freeze_panes = "A2"
+
+    print("Téléchargement des images...", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        images = list(pool.map(lambda r: _telecharger_image(r.get("image")), resultats))
+
+    # Regroupement par extension, dans l'ordre d'apparition dans le JSON.
+    par_extension = {}
+    for r, img in zip(resultats, images):
+        if not r["erreur"]:
+            par_extension.setdefault(r["extension"] or "Sans extension", []).append((r, img))
+
+    wb = Workbook()
+    recap = wb.active
+    recap.title = "Récapitulatif"
+    entete(recap, ["Extension", "Cartes", "Valeur", "Prix d'achat"], [40, 10, 14, 14])
+
+    onglets = {"récapitulatif", "erreurs"}
+    for extension, lignes in par_extension.items():
+        ws = wb.create_sheet(_nom_onglet(extension, onglets))
+        entete(ws, ["Image", "Carte", "Nom", "État", "Qté", "Prix", "Prix d'achat", "Total achat", "Cardmarket"],
+               [14, 10, 30, 7, 6, 12, 13, 13, 14])
+        for r, img in lignes:
+            ws.append([None, r["carte"], r["nom"], r["etat"], r["quantite"], r["prix"], r["prix_achat"],
+                       r["total_achat"], "Voir" if r.get("lien") else None])
+            ligne = ws.max_row
+            ws.row_dimensions[ligne].height = HAUTEUR_IMAGE * 0.75 + 4  # points = pixels × 0,75
+            for cellule in ws[ligne]:
+                cellule.alignment = Alignment(vertical="center")
+            for col in "FGH":
+                ws[f"{col}{ligne}"].number_format = EUR
+            if r.get("lien"):
+                ws[f"I{ligne}"].hyperlink = r["lien"]
+                ws[f"I{ligne}"].style = "Hyperlink"
+            if img:
+                image = ImageXL(BytesIO(img))
+                image.width, image.height = LARGEUR_IMAGE, HAUTEUR_IMAGE
+                ws.add_image(image, f"A{ligne}")
+            else:
+                ws[f"A{ligne}"] = "(pas d'image)"
+
+        derniere = ws.max_row
+        ws.append([None, None, "TOTAL", None, f"=SUM(E2:E{derniere})", f"=SUMPRODUCT(E2:E{derniere},F2:F{derniere})",
+                   None, f"=SUM(H2:H{derniere})"])
+        for cellule in ws[ws.max_row]:
+            cellule.font = Font(bold=True)
+        ws[f"F{ws.max_row}"].number_format = ws[f"H{ws.max_row}"].number_format = EUR
+
+        recap.append([extension, sum(r["quantite"] for r, _ in lignes),
+                      sum(r["prix"] * r["quantite"] for r, _ in lignes), sum(r["total_achat"] for r, _ in lignes)])
+
+    derniere = recap.max_row
+    recap.append(["TOTAL", f"=SUM(B2:B{derniere})", f"=SUM(C2:C{derniere})", f"=SUM(D2:D{derniere})"])
+    for cellule in recap[recap.max_row]:
+        cellule.font = Font(bold=True)
+    for ligne in range(2, recap.max_row + 1):
+        recap[f"C{ligne}"].number_format = recap[f"D{ligne}"].number_format = EUR
+
+    erreurs = [r for r in resultats if r["erreur"]]
+    if erreurs:
+        ws = wb.create_sheet("Erreurs")
+        entete(ws, ["Carte", "État", "Qté", "Erreur"], [12, 7, 6, 60])
+        for r in erreurs:
+            ws.append([r["carte"], r["etat"], r["quantite"], r["erreur"]])
+
+    wb.save(chemin)
 
 
 def main():
     p = argparse.ArgumentParser(description="Estimation d'un achat de cartes Pokémon (prix Cardmarket, prix d'achat).")
     p.add_argument("fichier", nargs="?", help="fichier JSON contenant la liste des cartes")
-    p.add_argument("-o", "--sortie", default="estimation.csv", help="fichier CSV de sortie")
+    p.add_argument("-o", "--sortie", default="estimation.xlsx", help="fichier Excel de sortie")
     p.add_argument("--rafraichir", action="store_true", help="recharger la liste des sets (nouvelle extension)")
     p.add_argument("--extensions", action="store_true", help="exporter la liste des extensions dans extensions.csv")
     args = p.parse_args()
@@ -272,11 +363,12 @@ def main():
     cartes = json.loads(Path(args.fichier).read_text(encoding="utf-8"))
     resultats, total = estimer(cartes, args.rafraichir)
     afficher(resultats, total)
-    exporter_csv(resultats, args.sortie)
+    exporter_excel(resultats, args.sortie)
     print(f"Détail exporté dans {args.sortie}")
 
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     main()

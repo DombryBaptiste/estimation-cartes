@@ -1,20 +1,24 @@
 # Estimation de cartes Pokémon
 
-Script Python à lancer **une fois par achat** : il prend toutes les cartes du fichier JSON et sort un CSV avec,
-pour chaque carte, son **image**, son **prix** (tendance Cardmarket) et le **prix d'achat** à proposer.
+Script Python à lancer **une fois par achat** : il prend toutes les cartes du fichier JSON et sort un **classeur Excel** avec **un onglet par extension**.
+Chaque carte y figure avec son **image**, son **prix** (tendance Cardmarket) et le **prix d'achat** à proposer.
 
 Les prix viennent de l'API gratuite [TCGdex](https://tcgdex.dev), qui reprend les prix Cardmarket.
 La tendance n'est **pas filtrée par langue** (toutes langues confondues). Un coefficient est ensuite appliqué selon l'état de la carte.
 
 ## Prérequis
 
-Python 3.10 ou plus récent. Aucune dépendance à installer.
+Python 3.10 ou plus récent, puis une seule fois :
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 ## Utilisation
 
 ```bash
-python estimation_cartes.py cartes.json              # tableau + estimation.csv (image, prix, prix d'achat)
-python estimation_cartes.py cartes.json -o lot.csv   # autre fichier de sortie
+python estimation_cartes.py cartes.json               # tableau + estimation.xlsx
+python estimation_cartes.py cartes.json -o lot.xlsx   # autre fichier de sortie
 python estimation_cartes.py --extensions             # liste des extensions -> extensions.csv
 python estimation_cartes.py cartes.json --rafraichir # recharge les extensions (nouvelle sortie)
 ```
@@ -43,8 +47,14 @@ Format du fichier JSON :
 Les coefficients (`COEF_ETAT`), la remise (`REMISE_ACHAT`) et le pas d'arrondi (`PAS_ARRONDI`)
 se règlent en haut de `estimation_cartes.py`.
 
-Colonnes du CSV : `carte`, `nom`, `extension`, `etat`, `quantite`, `image` (lien vers l'image de la carte),
-`prix`, `prix_achat`, `total_achat`, `lien` (page Cardmarket), `erreur`.
+## Contenu du fichier Excel
+
+- **Récapitulatif** : nombre de cartes, valeur et prix d'achat par extension, et le total du lot.
+- **Un onglet par extension** : image de la carte, code, nom, état, quantité, prix, prix d'achat, total, lien Cardmarket,
+  avec une ligne de total en bas.
+- **Erreurs** (seulement s'il y en a) : cartes introuvables ou sans prix.
+
+Certaines cartes promo n'ont pas d'image chez TCGdex : la case indique alors « (pas d'image) ».
 
 ## Utilisation dans une autre application
 

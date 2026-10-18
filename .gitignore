@@ -1,3 +1,4 @@
 estimation.csv
 sets_cache.json
 __pycache__/
+*.xlsx
