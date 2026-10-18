@@ -1,14 +1,13 @@
 """
-Estimation d'un achat de cartes Pokémon : à lancer une fois par achat, sur la liste des cartes.
+Classeur Excel de sélection pour les achats de cartes Pokémon.
 
-Classeur Excel : un onglet par extension, avec pour chaque carte son image, son prix et le prix d'achat :
-- prix         = tendance Cardmarket × coefficient d'état (voir COEF_ETAT) ;
-- prix d'achat = prix − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00).
-Dans Excel, la colonne « Prix FR » (jaune) permet de saisir le premier prix FR relevé via le lien
-Cardmarket (déjà filtré sur le français et l'état) : le prix d'achat est alors recalculé sur ce prix.
+Un onglet par série (ex. « PFL - Flammes Fantasmagoriques ») avec, pour chaque carte du JSON :
+image, case « Pris », code, nom, état, prix FR à saisir, prix d'achat calculé et lien Cardmarket
+(déjà filtré sur les offres en français et l'état).
+- prix d'achat = prix FR − REMISE_ACHAT (20 %), arrondi au 0,50 € inférieur (6,70 -> 6,50 ; 6,40 -> 6,00) ;
+- le récapitulatif ne totalise que les cartes cochées « Pris ».
 
-Source : API gratuite TCGdex (https://tcgdex.dev), qui reprend la tendance Cardmarket
-(toutes langues confondues).
+Source des fiches (nom, image, n° Cardmarket) : API gratuite TCGdex (https://tcgdex.dev).
 
 Utilisation :
     python estimation_cartes.py cartes.json              -> tableau + estimation.xlsx
@@ -204,8 +203,7 @@ def estimer_une(entree, codes):
         # Page produit filtrée sur les offres en français (language=2) et sur l'état demandé ou meilleur.
         res["lien"] = (f"https://www.cardmarket.com/fr/Pokemon/Products?idProduct={id_cardmarket}"
                        f"&language=2&minCondition={list(COEF_ETAT).index(etat) + 1}")
-    if tendance is None:
-        res["erreur"] = "pas de prix Cardmarket"
+    if tendance is None:  # la carte reste listée : le prix FR se saisit dans l'Excel
         return res
     res["tendance"] = tendance
     res["prix"] = round(tendance * COEF_ETAT[etat], 2)
@@ -223,44 +221,41 @@ def estimer(cartes, rafraichir=False):
     return resultats, total
 
 
-def _eur(v):
-    return "-" if v is None else f"{v:.2f} €".replace(".", ",")
-
-
-def afficher(resultats, total):
-    lignes = [("Carte", "Nom", "État", "Qté", "Prix", "Prix d'achat", "Total achat")]
+def afficher(resultats):
+    """Résumé console : nombre de cartes par série et cartes en erreur."""
+    series = {}
     for r in resultats:
-        if r["erreur"]:
-            lignes.append((r["carte"], "⚠ " + r["erreur"], r["etat"], str(r["quantite"]), "", "", ""))
-        else:
-            lignes.append((r["carte"], r["nom"][:30], r["etat"], str(r["quantite"]), _eur(r["prix"]),
-                           _eur(r["prix_achat"]), _eur(r["total_achat"])))
-    largeurs = [max(len(l[i]) for l in lignes) for i in range(len(lignes[0]))]
-    for n, l in enumerate(lignes):
-        print("  ".join(c.ljust(w) for c, w in zip(l, largeurs)))
-        if n == 0:
-            print("  ".join("-" * w for w in largeurs))
-    nb_erreurs = sum(1 for r in resultats if r["erreur"])
-    total_prix = sum((r["prix"] or 0) * r["quantite"] for r in resultats)
-    print(f"\nValeur du lot : {_eur(total_prix)}")
-    print(f"PRIX D'ACHAT  : {_eur(total)}  ({len(resultats) - nb_erreurs} cartes estimées, {nb_erreurs} en erreur)")
+        if not r["erreur"]:
+            series[r["serie"]] = series.get(r["serie"], 0) + r["quantite"]
+    for serie, nb in series.items():
+        print(f"  {nb:4d}  {serie}")
+    erreurs = [r for r in resultats if r["erreur"]]
+    for r in erreurs:
+        print(f"  ⚠ {r['carte']} : {r['erreur']}")
+    print(f"\n{sum(series.values())} cartes dans {len(series)} séries, {len(erreurs)} en erreur")
 
 
 def _telecharger_image(url):
-    """Image de la carte (petite taille) en mémoire, ou None si indisponible."""
+    """Vignette JPEG de la carte (180 × 250 px), ou None si indisponible."""
     if not url:
         return None
-    req = urllib.request.Request(url.replace("/high.png", "/low.png"), headers={"User-Agent": "estimation-cartes/1.0"})
+    from io import BytesIO
+    from PIL import Image
+    req = urllib.request.Request(url.replace("/high.png", "/low.jpg"), headers={"User-Agent": "estimation-cartes/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            return r.read()
-    except (urllib.error.URLError, TimeoutError):
+            image = Image.open(BytesIO(r.read())).convert("RGB")
+    except (urllib.error.URLError, TimeoutError, OSError):
         return None
+    image.thumbnail((180, 250))
+    sortie = BytesIO()
+    image.save(sortie, "JPEG", quality=85)
+    return sortie.getvalue()
 
 
 def _nom_onglet(nom, deja_pris):
     """Nom d'onglet Excel valide (31 caractères max, sans []:*?/\\) et unique."""
-    base = re.sub(r"[\[\]:*?/\\]", "-", nom or "Sans extension").strip()[:31] or "Sans extension"
+    base = re.sub(r"[\[\]:*?/\\]", "-", nom or "Sans série").strip()[:31] or "Sans série"
     nom_final, n = base, 2
     while nom_final.lower() in deja_pris:
         suffixe = f" ({n})"
@@ -270,65 +265,75 @@ def _nom_onglet(nom, deja_pris):
 
 
 def exporter_excel(resultats, chemin):
-    """Classeur Excel : un onglet par extension (avec l'image de chaque carte) + un onglet récapitulatif."""
+    """
+    Classeur Excel de sélection : un onglet par série, prix FR saisis à la main,
+    case « Pris » par carte et récapitulatif des seules cartes prises.
+    """
     from io import BytesIO
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as ImageXL
+    from openpyxl.formatting.rule import FormulaRule
     from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.datavalidation import DataValidation
 
     EUR = '#,##0.00 "€"'
     LARGEUR_IMAGE, HAUTEUR_IMAGE = 90, 125  # pixels
     entete_style = (Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="3949AB"))
+    saisie = PatternFill("solid", fgColor="FFF59D")
+    vert = PatternFill("solid", fgColor="C8E6C9")
+    gras = Font(bold=True)
 
     def entete(ws, titres, largeurs):
         ws.append(titres)
         for cellule, largeur in zip(ws[ws.max_row], largeurs):
             cellule.font, cellule.fill = entete_style
             ws.column_dimensions[cellule.column_letter].width = largeur
-        ws.freeze_panes = "A2"
 
     print("Téléchargement des images...", file=sys.stderr)
     with ThreadPoolExecutor(max_workers=8) as pool:
         images = list(pool.map(lambda r: _telecharger_image(r.get("image")), resultats))
 
-    # Regroupement par série (extension), dans l'ordre d'apparition dans le JSON.
-    par_extension = {}
+    # Regroupement par série, dans l'ordre du JSON ; une ligne par exemplaire.
+    par_serie = {}
     for r, img in zip(resultats, images):
         if not r["erreur"]:
-            par_extension.setdefault(r.get("serie") or "Sans série", []).append((r, img))
+            par_serie.setdefault(r.get("serie") or "Sans série", []).extend([(r, img)] * max(1, r["quantite"]))
 
     wb = Workbook()
     recap = wb.active
     recap.title = "Récapitulatif"
-    entete(recap, ["Série", "Cartes", "Valeur", "Prix d'achat"], [40, 10, 14, 14])
 
-    # Prix d'achat calculé par Excel : il se met à jour quand on saisit le prix FR relevé sur Cardmarket.
-    formule_achat = "=FLOOR(H{n}*" + f"{1 - REMISE_ACHAT:g}," + f"{PAS_ARRONDI:g})"
-    saisie = PatternFill("solid", fgColor="FFF59D")
+    # Prix d'achat : prix FR saisi − remise, arrondi au pas inférieur ; vide tant que le prix n'est pas saisi.
+    achat = '=IF(F{n}="","",FLOOR(F{n}*' + f"{1 - REMISE_ACHAT:g},{PAS_ARRONDI:g}))"
+    # Carte prise : ✔ (liste), x, ou case à cocher Excel (VRAI).
+    pris = '=IF(OR(B{n}=TRUE,B{n}="✔",LOWER(B{n})="x"),1,0)'
 
     onglets = {"récapitulatif", "erreurs"}
-    for extension, lignes in par_extension.items():
-        nom_onglet = _nom_onglet(extension, onglets)
+    lignes_recap = []
+    for serie, cartes in par_serie.items():
+        nom_onglet = _nom_onglet(serie, onglets)
         ws = wb.create_sheet(nom_onglet)
-        entete(ws, ["Image", "Carte", "Nom", "État", "Qté", "Tendance", "Prix FR", "Prix retenu", "Prix d'achat",
-                    "Total achat", "Cardmarket FR"],
-               [14, 10, 30, 7, 6, 12, 12, 13, 13, 13, 16])
-        ws["G1"].fill = PatternFill("solid", fgColor="F9A825")
-        for r, img in lignes:
+        entete(ws, ["Image", "Pris", "Carte", "Nom", "État", "Prix FR", "Prix d'achat", "Cardmarket FR", "pris"],
+               [14, 7, 10, 32, 7, 12, 13, 18, 5])
+        ws["F1"].fill = PatternFill("solid", fgColor="F9A825")
+        ws.column_dimensions["I"].hidden = True  # colonne technique : 1 si la carte est prise
+        ws.freeze_panes = "C2"
+
+        for r, img in cartes:
             n = ws.max_row + 1
-            ws.append([None, r["carte"], r["nom"], r["etat"], r["quantite"], r["prix"], None,
-                       f'=IF(G{n}="",F{n},G{n})', formule_achat.format(n=n), f"=I{n}*E{n}",
-                       "Voir les offres FR" if r.get("lien") else None])
+            ws.append([None, None, r["carte"], r["nom"], r["etat"], None, achat.format(n=n),
+                       "Voir les offres FR" if r.get("lien") else None, pris.format(n=n)])
             ws.row_dimensions[n].height = HAUTEUR_IMAGE * 0.75 + 4  # points = pixels × 0,75
             for cellule in ws[n]:
                 cellule.alignment = Alignment(vertical="center")
-            for col in "FGHIJ":
-                ws[f"{col}{n}"].number_format = EUR
-            ws[f"G{n}"].fill = saisie
+            ws[f"B{n}"].alignment = Alignment(horizontal="center", vertical="center")
+            ws[f"B{n}"].font = Font(size=16, bold=True, color="2E7D32")
+            ws[f"F{n}"].fill = saisie
+            ws[f"F{n}"].number_format = ws[f"G{n}"].number_format = EUR
             if r.get("lien"):
-                ws[f"K{n}"].hyperlink = r["lien"]
-                ws[f"K{n}"].style = "Hyperlink"
-                ws[f"K{n}"].alignment = Alignment(vertical="center")
+                ws[f"H{n}"].hyperlink = r["lien"]
+                ws[f"H{n}"].style = "Hyperlink"
+                ws[f"H{n}"].alignment = Alignment(vertical="center")
             if img:
                 image = ImageXL(BytesIO(img))
                 image.width, image.height = LARGEUR_IMAGE, HAUTEUR_IMAGE
@@ -337,32 +342,62 @@ def exporter_excel(resultats, chemin):
                 ws[f"A{n}"] = "(pas d'image)"
 
         derniere = ws.max_row
-        total = derniere + 1
-        ws.append([None, None, "TOTAL", None, f"=SUM(E2:E{derniere})", None, None,
-                   f"=SUMPRODUCT(E2:E{derniere},H2:H{derniere})", None, f"=SUM(J2:J{derniere})"])
-        for cellule in ws[total]:
-            cellule.font = Font(bold=True)
-        ws[f"H{total}"].number_format = ws[f"J{total}"].number_format = EUR
+        validation = DataValidation(type="list", formula1='"✔"', allow_blank=True, showErrorMessage=False)
+        ws.add_data_validation(validation)
+        validation.add(f"B2:B{derniere}")
+        ws.conditional_formatting.add(f"B2:H{derniere}", FormulaRule(formula=["$I2=1"], fill=vert))
+
+        total = derniere + 2
+        ws[f"D{total}"] = "Cartes prises"
+        ws[f"E{total}"] = f"=SUM(I2:I{derniere})"
+        ws[f"F{total}"] = f"=SUMIF(I2:I{derniere},1,F2:F{derniere})"
+        ws[f"G{total}"] = f"=SUMIF(I2:I{derniere},1,G2:G{derniere})"
+        for col in "DEFG":
+            ws[f"{col}{total}"].font = gras
+        ws[f"F{total}"].number_format = ws[f"G{total}"].number_format = EUR
 
         ref = "'" + nom_onglet.replace("'", "''") + "'!"
-        recap.append([extension, f"={ref}E{total}", f"={ref}H{total}", f"={ref}J{total}"])
+        lignes_recap.append((serie, f"={ref}E{total}", f"={ref}F{total}", f"={ref}G{total}"))
 
-    derniere = recap.max_row
-    recap.append(["TOTAL", f"=SUM(B2:B{derniere})", f"=SUM(C2:C{derniere})", f"=SUM(D2:D{derniere})"])
-    for cellule in recap[recap.max_row]:
-        cellule.font = Font(bold=True)
-    for ligne in range(2, recap.max_row + 1):
-        recap[f"C{ligne}"].number_format = recap[f"D{ligne}"].number_format = EUR
+    # Récapitulatif : uniquement les cartes prises.
+    recap["A1"] = "Cartes prises"
+    recap["A1"].font = Font(bold=True, size=14)
     recap.append([])
-    recap.append(["Saisissez le premier prix FR (case jaune) dans chaque onglet : le prix d'achat et les totaux "
-                  "se recalculent. Case vide = tendance Cardmarket toutes langues."])
+    entete(recap, ["Série", "Cartes prises", "Valeur (prix FR)", "Prix d'achat"], [40, 14, 16, 16])
+    debut = recap.max_row + 1
+    for ligne in lignes_recap:
+        recap.append(list(ligne))
+    fin = recap.max_row
+    recap.append(["TOTAL", f"=SUM(B{debut}:B{fin})", f"=SUM(C{debut}:C{fin})", f"=SUM(D{debut}:D{fin})"])
+    for cellule in recap[recap.max_row]:
+        cellule.font = gras
+    for ligne in range(debut, recap.max_row + 1):
+        recap[f"C{ligne}"].number_format = recap[f"D{ligne}"].number_format = EUR
+    # Séries avec des cartes prises en vert, les autres grisées.
+    recap.conditional_formatting.add(f"A{debut}:D{fin}", FormulaRule(formula=[f"$B{debut}>0"], fill=vert))
+    recap.conditional_formatting.add(f"A{debut}:D{fin}",
+                                     FormulaRule(formula=[f"$B{debut}=0"], font=Font(color="BDBDBD")))
+
+    aide = [
+        "Mode d'emploi",
+        "1. Dans chaque onglet, saisissez le prix FR (case jaune) : le prix d'achat se calcule (−20 %, arrondi au 0,50 € inférieur).",
+        "2. Cochez « Pris » (liste ✔, ou tapez x) pour les cartes que vous prenez : la ligne passe en vert.",
+        "3. Ce récapitulatif ne totalise que les cartes prises.",
+        "Remise à zéro : cliquez sur le 1er onglet de série, puis Maj+clic sur le dernier (toutes les séries sont groupées),",
+        "sélectionnez la colonne B (Pris) et appuyez sur Suppr. Même chose sur la colonne F pour effacer les prix.",
+        "Cliquez ensuite sur l'onglet Récapitulatif pour dégrouper les feuilles.",
+    ]
+    recap.append([])
+    for texte in aide:
+        recap.append([texte])
+    recap[f"A{recap.max_row - len(aide) + 1}"].font = gras
 
     erreurs = [r for r in resultats if r["erreur"]]
     if erreurs:
         ws = wb.create_sheet("Erreurs")
-        entete(ws, ["Carte", "État", "Qté", "Erreur"], [12, 7, 6, 60])
+        entete(ws, ["Carte", "État", "Erreur"], [12, 7, 60])
         for r in erreurs:
-            ws.append([r["carte"], r["etat"], r["quantite"], r["erreur"]])
+            ws.append([r["carte"], r["etat"], r["erreur"]])
 
     wb.save(chemin)
 
@@ -382,8 +417,8 @@ def main():
         p.error("indique un fichier JSON (ou --extensions)")
 
     cartes = json.loads(Path(args.fichier).read_text(encoding="utf-8"))
-    resultats, total = estimer(cartes, args.rafraichir)
-    afficher(resultats, total)
+    resultats, _ = estimer(cartes, args.rafraichir)
+    afficher(resultats)
     exporter_excel(resultats, args.sortie)
     print(f"Détail exporté dans {args.sortie}")
 
